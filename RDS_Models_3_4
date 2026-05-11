@@ -1,0 +1,202 @@
+
+# Load libraries
+#install.packages("minqa")     # only once
+#install.packages("nloptr")
+library(nloptr)
+library(minqa)                # per session, before glmmTMB()
+library(tidyverse)
+library(lme4)
+library(performance)
+library(see)
+library(DHARMa)
+library(lmtest)
+library(car)
+library(ggplot2)
+library(glmmTMB)
+library(splines) # for ns() function
+library(car)
+library(lmtest)
+library(readr)   # for parse_number
+# Load libraries
+# # ADD YOUR SOURCE DIRECTORY. e.g.: Set working directory and read data
+#setwd("C:/Users/PC/OneDrive/Desktop/Documents
+df_long <- read_csv("df_long_1_7.csv", na = c("", "NA"))
+
+
+# Convert variables to appropriate types
+df_long <- df_long %>%
+  mutate(
+    Site = factor(Site),
+    DBH_class = factor(DBH_class),
+    Case = factor(Case) # for random effects
+  )
+#str(df_long$log_segment)
+# Create centered and scaled versions of DSoB and DSuB
+
+
+df_long <- df_long %>%
+  mutate(
+    DSoB_c = DSoB - mean(DSoB, na.rm = TRUE),           # Centered
+    DSoB_s = scale(DSoB)[, 1],                          # Scaled
+    DSuB_c = DSuB - mean(DSuB, na.rm = TRUE),           # Centered
+    DSuB_s = scale(DSuB)[, 1],                          # Scaled
+    DBH_c = DBH - mean(DBH, na.rm = TRUE),              # Centered
+    DBH_s = scale(DBH)[, 1],                            # Scaled
+    BT_base = scale(BT_base)[, 1],                      # Scaled
+    Length_c = Length - mean(Length, na.rm = TRUE),     # Centered
+    Length_s = scale(Length)[, 1],                      # Scaled
+    log_segment_num = parse_number(log_segment),                                 # Extract numeric
+    log_segment_c = log_segment_num - mean(log_segment_num, na.rm = TRUE)        # Centered
+  )
+
+
+# Transform
+df_long$log_weight_sqrt <- sqrt(df_long$log_weight)
+
+summary(as.factor(df_long$Case))
+summary(as.factor(df_long$log_segment))
+
+
+# No complex dispersion DISPFORMULA THE VETHE VERSION DSoB, DSoB,  DSoB
+mixed_mdl_tmb_oB <- glmmTMB(
+  log_weight_sqrt ~ ns(DSoB, df = 4) * log_segment * Site + DBH_class + (log_segment | Case),
+  dispformula = ~ log_segment + Site + BT_base + DBH_class,  # Removed ns(DSoB)
+  data = df_long,
+  family = gaussian()
+)
+
+summary(mixed_mdl_tmb_oB)
+library(performance)
+VarCorr(mixed_mdl_tmb_oB)
+
+pred <- predict(mixed_mdl_tmb_oB)
+
+pseudo_r2_1 <- 1 - sum((df_long$log_weight_sqrt - pred)^2) /
+  sum((df_long$log_weight_sqrt - mean(df_long$log_weight_sqrt))^2)
+
+pseudo_r2_1
+
+
+# No complex dispersion DISPFORMULA THE VETHE VERSION DSoB, DSoB,  DSoB
+mixed_mdl_tmb_uB <- glmmTMB(
+  log_weight_sqrt ~ ns(DSuB, df = 4) * log_segment * Site + DBH_class + (log_segment | Case),
+  dispformula = ~ log_segment + Site + BT_base + DBH_class,  # Removed ns(DSoB)
+  data = df_long,
+  family = gaussian()
+)
+
+summary(mixed_mdl_tmb_uB)
+CClibrary(performance)
+VarCorr(mixed_mdl_tmb_uB)
+
+# r2_mixed <- performance::r2(mixed_mdl_tmb_oB)
+# r2_mixed
+
+pred2 <- predict(mixed_mdl_tmb_uB)
+
+pseudo_r2 <- 1 - sum((df_long$log_weight_sqrt - pred2)^2) /
+  sum((df_long$log_weight_sqrt - mean(df_long$log_weight_sqrt))^2)
+
+pseudo_r2
+
+# ------------------------------------------------------------
+# DHARMa residual diagnostics
+# ------------------------------------------------------------
+
+library(DHARMa)
+
+# Simulate residuals
+sim_oB <- simulateResiduals(mixed_mdl_tmb_oB, n = 1000)
+
+# Print DHARMa tests
+testResiduals(sim_oB)
+testDispersion(sim_oB)
+testZeroInflation(sim_oB)
+
+# Plot the standard 4‑panel DHARMa diagnostic plot
+plot(sim_oB)
+
+# Plot residuals vs predictors (optional but useful)
+plotResiduals(sim_oB)
+
+# set.seed(42)
+# 
+# train_cases <- sample(unique(df_long$Case),
+#                       size = 0.8 * length(unique(df_long$Case)))
+# 
+# train_df <- df_long %>% filter(Case %in% train_cases)
+# test_df  <- df_long %>% filter(!Case %in% train_cases)
+
+
+
+
+########### BACK_TRANSFORM
+## ------------------------------------------------------------
+## 80:20 STRATIFIED SPLIT
+## ------------------------------------------------------------
+library(rsample)
+set.seed(42)
+
+df_long$strata <- interaction(df_long$log_segment, df_long$Site)
+
+split_80 <- initial_split(df_long, prop = 0.8, strata = strata)
+train_df <- training(split_80)
+test_df  <- testing(split_80)
+
+## ------------------------------------------------------------
+## Restrict to Log5 and Log6 only (avoids missing Log7×Site combos)
+## ------------------------------------------------------------
+train_df_sub <- train_df %>% filter(log_segment %in% c("Log5", "Log6"))
+test_df_sub  <- test_df  %>% filter(log_segment %in% c("Log5", "Log6"))
+
+## ------------------------------------------------------------
+## Fit model on restricted training set
+## ------------------------------------------------------------
+mixed_mdl_train_sub <- glmmTMB(
+  log_weight_sqrt ~ ns(DSoB, df = 4) * log_segment * Site +
+    DBH_class + (log_segment | Case),
+  dispformula = ~ log_segment + Site + BT_base + DBH_class,
+  data = train_df_sub,
+  family = gaussian()
+)
+
+## ------------------------------------------------------------
+## Generate predictions (still on sqrt scale)
+## ------------------------------------------------------------
+train_df_sub$pred_sqrt <- predict(mixed_mdl_train_sub, newdata = train_df_sub, allow.new.levels = TRUE)
+test_df_sub$pred_sqrt  <- predict(mixed_mdl_train_sub, newdata = test_df_sub,  allow.new.levels = TRUE)
+
+## ------------------------------------------------------------
+## BACK‑TRANSFORM predictions and actual values
+## ------------------------------------------------------------
+train_df_sub <- train_df_sub %>%
+  mutate(
+    actual_log_weight     = log_weight_sqrt^2,
+    predicted_log_weight  = pred_sqrt^2
+  )
+
+test_df_sub <- test_df_sub %>%
+  mutate(
+    actual_log_weight     = log_weight_sqrt^2,
+    predicted_log_weight  = pred_sqrt^2
+  )
+
+## ------------------------------------------------------------
+## Create clean Actual vs Predicted tables
+## ------------------------------------------------------------
+actual_vs_pred_train <- train_df_sub[, c("actual_log_weight", "predicted_log_weight")]
+actual_vs_pred_test  <- test_df_sub[,  c("actual_log_weight", "predicted_log_weight")]
+
+names(actual_vs_pred_train) <- c("actual", "predicted")
+names(actual_vs_pred_test)  <- c("actual", "predicted")
+
+## ------------------------------------------------------------
+## Print results
+## ------------------------------------------------------------
+actual_vs_pred_train
+actual_vs_pred_test
+
+## Word‑friendly table
+library(knitr)
+kable(actual_vs_pred_test, digits = 4)
+
