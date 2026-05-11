@@ -10,7 +10,7 @@ library(vip)
 library(patchwork)
 library(dplyr)
 # Set working directory & read data
-setwd("C:/Users/PC/OneDrive/Desktop/Documents/PHD/GLM_and_GAM_with_R_Highland_course/extracted/AllData")
+#Your data source. #e.g. setwd("C:/Users/PC/OneDrive/Desktop/Docum
 df_long <- read_csv("df_long_log_1_7B.csv", na = c("", "NA"))
 
 ###############################
